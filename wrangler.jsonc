@@ -1,0 +1,10 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "firekv",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-03",
+  "kv_namespaces": [{
+    "binding": "FILES",
+    "id": "00000000000000000000000000000000"
+  }]
+}
