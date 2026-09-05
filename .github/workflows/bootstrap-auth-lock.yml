@@ -1,0 +1,46 @@
+name: bootstrap auth.net.im lock
+
+on:
+  push:
+    branches: [codex/auth-net-im-provider]
+    paths:
+      - .github/workflows/bootstrap-auth-lock.yml
+
+permissions:
+  contents: write
+
+jobs:
+  lock-and-qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Regenerate lockfile from exact package graph
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - name: Install locked graph
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Qualify candidate
+        run: |
+          npm test
+          npm run typecheck
+          npm run dry-run
+      - name: Commit exact lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- package-lock.json; then
+            echo 'package-lock.json already exact'
+            exit 0
+          fi
+          git config user.name 'dev@dashxd'
+          git config user.email '125025267+dash-xd@users.noreply.github.com'
+          git add package-lock.json
+          git commit -m 'Lock auth.net.im composition'
+          git push origin HEAD:codex/auth-net-im-provider
