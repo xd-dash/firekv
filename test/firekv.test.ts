@@ -102,7 +102,7 @@ test('GitHub identity mints a scope-bound Terraform credential that persists tfs
   assert.equal(write.status, 200)
 
   const read = await app.request(session.address, {
-    headers: { authorization: basic.toLowerCase().replace('basic', 'basic') },
+    headers: { authorization: basic.replace(/^Basic/, 'bAsIc') },
   }, env)
   assert.equal(read.status, 200)
   assert.equal(await read.text(), state)
