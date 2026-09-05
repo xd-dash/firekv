@@ -181,7 +181,7 @@ export function createFireKVApp(githubOptions: GitHubAuthOptions = {}) {
       return c.json({ error: 'workload_identity_incomplete' }, 403, { 'cache-control': 'no-store' })
     }
 
-    const body = await c.req.json<{ scope?: string }>().catch(() => ({}))
+    const body: { scope?: string } = await c.req.json<{ scope?: string }>().catch(() => ({}))
     const scope = body.scope ? normalizeScope(body.scope) : null
     if (!scope) return c.json({ error: 'invalid_scope' }, 400, { 'cache-control': 'no-store' })
 
