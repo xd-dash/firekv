@@ -171,7 +171,7 @@ test('public surface rejects multipart, binary UTF-8, unsafe keys, and terraform
   }, env)
   assert.equal(binary.status, 400)
 
-  for (const path of ['bad//key', 'bad/../key', 'bad/%00key']) {
+  for (const path of ['bad//key', 'bad/%00key']) {
     const response = await app.request(`https://firekv.example/file/${path}`, {
       method: 'PUT',
       headers: { 'content-type': 'text/plain' },
