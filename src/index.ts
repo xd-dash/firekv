@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { renderEditor, renderHome } from './public-ui'
 
 import { AuthError } from '@xd-dash/auth.net.im/core'
 import {
@@ -184,12 +185,6 @@ const readPlainTextBody = async (request: Request): Promise<TextBodyResult> => {
   }
 }
 
-const shell = (title: string, body: string) => `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escapeHtml(title)} · firekv</title>
-<style>:root{color-scheme:light dark;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}body{max-width:1100px;margin:0 auto;padding:2rem}a{color:inherit}textarea{width:100%;min-height:55vh;box-sizing:border-box;padding:1rem;font:inherit;tab-size:2}.bar{display:flex;gap:.75rem;align-items:center;margin:1rem 0;flex-wrap:wrap}input[type=text]{min-width:22rem;max-width:100%;padding:.55rem;font:inherit}button{padding:.55rem .9rem;font:inherit;cursor:pointer}#status,#create-status{opacity:.75}</style>
-</head><body>${body}</body></html>`
-
 export function createFireKVApp(githubOptions: GitHubAuthOptions = {}) {
   const app = new Hono<{ Bindings: Bindings; Variables: GitHubAuthVariables }>({ strict: false })
 
@@ -210,32 +205,7 @@ export function createFireKVApp(githubOptions: GitHubAuthOptions = {}) {
       ? keys.map(({ name }) => `<li><a href="/file/${encodeKeyPath(name)}/">${escapeHtml(name)}</a></li>`).join('')
       : '<li><em>KV is empty.</em></li>'
     c.header('cache-control', 'no-store')
-    return c.html(shell('files', `<h1>firekv</h1>
-      <p>Public UTF-8 text values stored in <code>FILES</code>. Terraform state is isolated under a reserved protected namespace.</p>
-      <h2>Create text</h2>
-      <form id="create-editor">
-        <div class="bar"><label>Key <input id="create-key" type="text" autocomplete="off" placeholder="notes/example.txt" required></label></div>
-        <textarea id="create-contents" spellcheck="false" placeholder="Enter text only"></textarea>
-        <div class="bar"><button type="submit">Save text</button><span id="create-status"></span></div>
-      </form>
-      <h2>Saved text</h2><ul>${items}</ul>
-      <script type="module">
-        const form = document.querySelector('#create-editor')
-        const key = document.querySelector('#create-key')
-        const contents = document.querySelector('#create-contents')
-        const status = document.querySelector('#create-status')
-        form.addEventListener('submit', async (event) => {
-          event.preventDefault(); status.textContent = 'saving…'
-          const path = key.value.trim().split('/').map(encodeURIComponent).join('/')
-          const response = await fetch('/file/' + path, { method: 'PUT', headers: { 'content-type': 'text/plain; charset=utf-8' }, body: contents.value })
-          if (response.ok) {
-            status.textContent = 'saved'
-            location.href = '/file/' + path + '/'
-          } else {
-            status.textContent = 'save failed (' + response.status + '): ' + await response.text()
-          }
-        })
-      </script>`))
+    return c.html(renderHome(c.req.raw, items))
   })
 
   app.get('/file/*', async (c) => {
@@ -250,20 +220,7 @@ export function createFireKVApp(githubOptions: GitHubAuthOptions = {}) {
       return c.text('stored value is not valid UTF-8 text', 415, noStore)
     }
     c.header('cache-control', 'no-store')
-    return c.html(shell(key, `
-      <p><a href="/">← files</a></p><h1>${escapeHtml(key)}</h1>
-      <form id="editor"><textarea id="contents" spellcheck="false">${escapeHtml(value)}</textarea>
-      <div class="bar"><button type="submit">Save text</button><span id="status"></span></div></form>
-      <script type="module">
-        const form = document.querySelector('#editor')
-        const contents = document.querySelector('#contents')
-        const status = document.querySelector('#status')
-        form.addEventListener('submit', async (event) => {
-          event.preventDefault(); status.textContent = 'saving…'
-          const response = await fetch('./', { method: 'PUT', headers: { 'content-type': 'text/plain; charset=utf-8' }, body: contents.value })
-          status.textContent = response.ok ? 'saved' : 'save failed (' + response.status + '): ' + await response.text()
-        })
-      </script>`))
+    return c.html(renderEditor(c.req.raw, key, value))
   })
 
   app.put('/file/*', async (c) => {
