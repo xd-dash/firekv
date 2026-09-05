@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@xd-dash/auth.net.im": "github:xd-dash/auth.net.im#ba03cb2ada69ee399c05468f39bed0be67ee6f8d",
+    "@xd-dash/dashxd.com": "github:xd-dash/dashxd.com#56ab240893a7462cd7e5f111f6e8b2553e01d3ed",
     "hono": "4.13.5"
   },
   "devDependencies": {
