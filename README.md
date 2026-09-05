@@ -1,10 +1,24 @@
 # firekv
 
-A Hono + Cloudflare Workers KV file editor and Terraform HTTP remote-state backend.
+A Hono + Cloudflare Workers KV text editor and Terraform HTTP remote-state backend.
 
-The primary infrastructure purpose of FireKV is to persist Terraform state in Workers KV while letting Terraform keep using its built-in `http` backend. Ordinary non-reserved KV keys can still be edited as raw string files through the small browser UI.
+The primary infrastructure purpose of FireKV is to persist Terraform state in Workers KV while letting Terraform keep using its built-in `http` backend. Ordinary non-reserved KV keys can be created and edited as public UTF-8 text through the browser UI.
 
-The `terraform/` KV prefix is reserved for Terraform state and is deliberately excluded from the public file UI.
+The `terraform/` KV prefix is reserved for Terraform state and is deliberately excluded from the public text surface.
+
+## Public text editor
+
+`https://firekv.dashxd.com/` and `https://kv.dashxd.com/` expose the same Worker-backed text editor. The page accepts a key plus text in a textarea, then stores the value in the shared `FILES` Workers KV namespace.
+
+The public write contract is intentionally text-only:
+
+```text
+PUT /file/<key>
+Content-Type: text/plain[; charset=utf-8]
+body: valid UTF-8
+```
+
+There is no file upload control and no multipart/binary upload route. FireKV rejects `multipart/form-data`, invalid UTF-8, unsafe key aliases, and any attempt to enter the reserved `terraform/` namespace. Public editor responses use `Cache-Control: no-store` so edits are not served from a shared public cache.
 
 ## Terraform HTTP backend
 
@@ -29,7 +43,7 @@ Every POST writes a history object before replacing the current object. DELETE a
 
 This deployment intentionally accepts Workers KV's eventual consistency because it is a sandbox state backend. The operational invariant is one active Terraform writer per exact state scope. FireKV does not expose Terraform lock/unlock endpoints and does not implement a fake KV mutex. If stronger coordination becomes necessary, move state coordination to a strongly consistent primitive instead of layering read-then-write locking on KV.
 
-FireKV also enforces the relevant Workers KV object limits at its boundary: state values are capped at 25 MiB and scope length is bounded with headroom under the 512-byte KV key limit for history keys.
+FireKV enforces the relevant Workers KV object limits at its boundary: state values are capped at 25 MiB and scope length is bounded with headroom under the 512-byte KV key limit for history keys.
 
 Terraform configuration remains small and composable:
 
@@ -48,17 +62,14 @@ export TF_HTTP_PASSWORD="$password"
 terraform init -reconfigure
 ```
 
-This keeps state credentials out of Terraform configuration and generated source files.
-
 ## GitHub identity and FireKV capability exchange
 
-FireKV does not implement GitHub JWT/JWKS verification itself. It composes the exact `@xd-dash/auth.net.im/providers/github` package revision declared in `package.json`.
+FireKV does not implement GitHub JWT/JWKS verification itself. It composes `@xd-dash/auth.net.im/providers/github`.
 
 ```text
 GitHub Actions OIDC assertion
         ↓
 GitHubProvider.middleware()
-  from auth.net.im
         ↓
 verified provider-neutral AuthIdentity
         ↓
@@ -71,37 +82,11 @@ short-lived Basic credential bound to one tfstate scope
 Terraform HTTP backend
 ```
 
-`auth.net.im` owns GitHub assertion semantics: RS256, GitHub JWKS, issuer, audience, workload claims, and supplied owner/repository/ref/workflow policy. FireKV only consumes the normalized identity and issues a narrower FireKV credential.
+`auth.net.im` owns GitHub assertion semantics: RS256, GitHub JWKS, issuer, audience, workload claims, and supplied owner/repository/ref/workflow policy. FireKV consumes the normalized identity and issues a narrower FireKV credential.
 
 `POST /auth/github-oidc` is protected directly by `GitHubProvider.middleware()`. `/tfstate/*` is deliberately not protected by GitHub middleware because Terraform's HTTP backend natively supports Basic authentication but does not mint a GitHub OIDC assertion for every state request.
 
 The returned Basic-auth password is an HMAC-signed FireKV session token bound to one exact tfstate scope, GitHub repository identity, and GitHub run. It is not a Cloudflare API token.
-
-Example GitHub Actions handoff:
-
-```sh
-set -euo pipefail
-
-scope='cloudflare/dashxd'
-oidc="$(curl -fsSL \
-  -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-  "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${GITHUB_AUDIENCE}" | jq -r .value)"
-
-session="$(curl -fsSL \
-  -H "Authorization: Bearer $oidc" \
-  -H 'Content-Type: application/json' \
-  --data "$(jq -cn --arg scope "$scope" '{scope:$scope}')" \
-  "$FIREKV_URL/auth/github-oidc")"
-
-TF_HTTP_ADDRESS="$(jq -r .address <<<"$session")"
-TF_HTTP_USERNAME="$(jq -r .username <<<"$session")"
-TF_HTTP_PASSWORD="$(jq -r .password <<<"$session")"
-echo "::add-mask::$TF_HTTP_PASSWORD"
-
-export TF_HTTP_ADDRESS TF_HTTP_USERNAME TF_HTTP_PASSWORD
-terraform init -reconfigure
-terraform apply
-```
 
 The caller needs GitHub Actions `id-token: write`.
 
@@ -119,7 +104,7 @@ GITHUB_REFS               optional tightening
 GITHUB_WORKFLOW_PREFIX    optional tightening
 ```
 
-For the xd-dash deployment, Huram's `master` GitHub Environment owns the concrete values and maps them into these process bindings during exact-candidate qualification/deployment.
+For the xd-dash deployment, Huram's `master` GitHub Environment owns the concrete values and maps them into these process bindings during deployment.
 
 FireKV-specific runtime configuration remains separate:
 
@@ -133,20 +118,20 @@ FILES
 
 ## Cloudflare deployment
 
-Huram ABI owns the production deployment. The intended exact Custom Domains are:
+Huram ABI owns the deployment. The Custom Domains are:
 
 ```text
 https://firekv.dashxd.com
 https://kv.dashxd.com
 ```
 
-Both hostnames route to the same FireKV Worker and the same `FILES` Workers KV namespace. Because these are Workers Custom Domains and FireKV has no Workers Static Assets binding, every path on those hostnames enters the Worker; there is no asset-router bypass and no `assets.run_worker_first` setting required in the current deployment.
+Both hostnames route to the same FireKV Worker and the same `FILES` Workers KV namespace. Because these are Workers Custom Domains and FireKV has no Workers Static Assets binding, every path enters the Worker; there is no asset-router bypass and no `assets.run_worker_first` setting required.
 
-`workers.dev` and preview URLs are disabled. The session signing secret is injected as secret material during deployment. Concrete GitHub authorization policy comes from Huram's `master` Environment rather than this repository.
+`workers.dev` and preview URLs are disabled. Concrete GitHub authorization policy comes from Huram's `master` Environment.
 
-Cloudflare Access can independently protect a future browser UI, but it is not used as Terraform's state credential. Do not reuse a Cloudflare management API token as a FireKV data-plane credential.
+## Qualification
 
-## Local qualification
+Repository qualification is:
 
 ```sh
 npm ci
@@ -155,13 +140,8 @@ npm run typecheck
 npm run dry-run
 ```
 
-The tests inject a synthetic GitHub `AuthProvider`, mint a FireKV scope credential, write Terraform-state bytes, read them back, and verify cross-scope rejection, malformed paths/scopes, invalid TTLs, Basic-auth parsing, and Workers KV size boundaries.
+Production qualification is intentionally small: anonymous tfstate must return `401` + `no-store`, one real GitHub OIDC assertion must mint a scoped capability, Terraform must write and recover the state after a fresh `init`, a wrong scope must return `401`, and the public surface must pass one UTF-8 text round trip while rejecting multipart upload.
 
-For the file UI:
+DNS inventory, TLS status, Custom Domain internals, and other Cloudflare diagnostics are failure-analysis tools rather than independent release gates.
 
-```sh
-npx wrangler kv key put hello.txt 'hello from kv' --binding FILES --local --persist-to .wrangler/state
-npm run dev
-```
-
-See `FIREKV_IDIOMS.md` for the maintenance and deployment invariants.
+See `FIREKV_IDIOMS.md` for the maintenance invariants.
