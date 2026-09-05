@@ -1,0 +1,74 @@
+name: Compose dashxd design
+
+on:
+  push:
+    branches: [codex/dashxd-public-design]
+    paths:
+      - .github/workflows/compose-dashxd-design.yml
+
+permissions:
+  contents: write
+
+jobs:
+  compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: codex/dashxd-public-design
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Replace only public HTML composition points
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('src/index.ts')
+          text = path.read_text()
+
+          marker = "import { Hono } from 'hono'\n"
+          addition = marker + "import { renderEditor, renderHome } from './public-ui'\n"
+          if "from './public-ui'" not in text:
+              if text.count(marker) != 1:
+                  raise SystemExit('unexpected Hono import shape')
+              text = text.replace(marker, addition, 1)
+
+          shell_start = text.index('const shell = ')
+          shell_end = text.index('\n\nexport function createFireKVApp', shell_start)
+          text = text[:shell_start] + text[shell_end + 2:]
+
+          home_start = text.index("    return c.html(shell('files',")
+          home_end = text.index("\n  })\n\n  app.get('/file/*'", home_start)
+          text = text[:home_start] + "    return c.html(renderHome(c.req.raw, items))" + text[home_end:]
+
+          editor_route = text.index("  app.get('/file/*'")
+          editor_start = text.index('    return c.html(shell(key,', editor_route)
+          editor_end = text.index("\n  })\n\n  app.put('/file/*'", editor_start)
+          text = text[:editor_start] + "    return c.html(renderEditor(c.req.raw, key, value))" + text[editor_end:]
+
+          path.write_text(text)
+
+      - name: Refresh exact dependency lock
+        run: npm install --package-lock-only --ignore-scripts
+
+      - name: Exact package qualification
+        run: |
+          npm ci
+          npm test
+          npm run typecheck
+          npm run dry-run
+
+      - name: Commit composed source and lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/index.ts package-lock.json
+          git diff --cached --exit-code && exit 0
+          git commit -m 'Use canonical dashxd public design'
+          git push origin HEAD:codex/dashxd-public-design
