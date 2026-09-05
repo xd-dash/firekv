@@ -57,7 +57,7 @@ const provider: AuthProvider<GitHubEnv> = {
 const sessionSecret = '0123456789abcdef0123456789abcdef'
 
 async function mint(app: ReturnType<typeof createFireKVApp>, namespace: KVNamespace, scope = 'terraform/example', ttl = '600') {
-  const response = await app.request('https://firekv.example/auth/github-oidc', {
+  return app.request('https://firekv.example/auth/github-oidc', {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: 'Bearer synthetic' },
     body: JSON.stringify({ scope }),
@@ -66,7 +66,6 @@ async function mint(app: ReturnType<typeof createFireKVApp>, namespace: KVNamesp
     FIREKV_SESSION_SECRET: sessionSecret,
     FIREKV_SESSION_TTL_SECONDS: ttl,
   })
-  return response
 }
 
 test('GitHub identity mints a scope-bound Terraform credential that persists tfstate', async () => {
@@ -100,11 +99,13 @@ test('GitHub identity mints a scope-bound Terraform credential that persists tfs
     body: state,
   }, env)
   assert.equal(write.status, 200)
+  assert.equal(write.headers.get('cache-control'), 'no-store')
 
   const read = await app.request(session.address, {
     headers: { authorization: basic.replace(/^Basic/, 'bAsIc') },
   }, env)
   assert.equal(read.status, 200)
+  assert.equal(read.headers.get('cache-control'), 'no-store')
   assert.equal(await read.text(), state)
 
   const wrongScope = await app.request('https://firekv.example/tfstate/terraform/other', {
@@ -114,6 +115,78 @@ test('GitHub identity mints a scope-bound Terraform credential that persists tfs
 
   assert(entries.has('terraform/terraform/example/terraform.tfstate'))
   assert([...entries.keys()].some(key => key.startsWith('terraform/terraform/example/history/')))
+})
+
+test('public surface creates and edits UTF-8 text without exposing a file-upload control', async () => {
+  const { namespace, entries } = memoryKV()
+  const app = createFireKVApp({ provider })
+  const env = { FILES: namespace }
+
+  const home = await app.request('https://firekv.example/', {}, env)
+  assert.equal(home.status, 200)
+  assert.equal(home.headers.get('cache-control'), 'no-store')
+  const html = await home.text()
+  assert.match(html, /<textarea/i)
+  assert.doesNotMatch(html, /type=["']file["']/i)
+
+  const create = await app.request('https://firekv.example/file/notes/hello.txt', {
+    method: 'PUT',
+    headers: { 'content-type': 'text/plain; charset=utf-8' },
+    body: 'hello 🌎',
+  }, env)
+  assert.equal(create.status, 200)
+  assert.equal(create.headers.get('cache-control'), 'no-store')
+  assert.equal(new TextDecoder().decode(entries.get('notes/hello.txt')), 'hello 🌎')
+
+  const page = await app.request('https://firekv.example/file/notes/hello.txt/', {}, env)
+  assert.equal(page.status, 200)
+  assert.equal(page.headers.get('cache-control'), 'no-store')
+  assert.match(await page.text(), /hello 🌎/)
+
+  const edit = await app.request('https://firekv.example/file/notes/hello.txt', {
+    method: 'PUT',
+    headers: { 'content-type': 'text/plain' },
+    body: 'updated text',
+  }, env)
+  assert.equal(edit.status, 200)
+  assert.equal(new TextDecoder().decode(entries.get('notes/hello.txt')), 'updated text')
+})
+
+test('public surface rejects multipart, binary UTF-8, unsafe keys, and terraform namespace', async () => {
+  const { namespace, entries } = memoryKV()
+  const app = createFireKVApp({ provider })
+  const env = { FILES: namespace }
+
+  const multipart = await app.request('https://firekv.example/file/upload', {
+    method: 'PUT',
+    headers: { 'content-type': 'multipart/form-data; boundary=x' },
+    body: '--x--',
+  }, env)
+  assert.equal(multipart.status, 415)
+
+  const binary = await app.request('https://firekv.example/file/binary', {
+    method: 'PUT',
+    headers: { 'content-type': 'text/plain' },
+    body: new Uint8Array([0xff, 0xfe]),
+  }, env)
+  assert.equal(binary.status, 400)
+
+  for (const path of ['bad//key', 'bad/../key', 'bad/%00key']) {
+    const response = await app.request(`https://firekv.example/file/${path}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'text/plain' },
+      body: 'nope',
+    }, env)
+    assert.equal(response.status, 400, path)
+  }
+
+  const reserved = await app.request('https://firekv.example/file/terraform/private', {
+    method: 'PUT',
+    headers: { 'content-type': 'text/plain' },
+    body: 'nope',
+  }, env)
+  assert.equal(reserved.status, 404)
+  assert.equal(entries.size, 0)
 })
 
 test('state scope rejects aliases and overlong keys before touching KV', async () => {
