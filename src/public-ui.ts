@@ -19,9 +19,9 @@ export const renderHome = (request: Request, items: string) => renderDocument({
     <p class="body-copy">firekv is eventually consistent</p>
     <form id="create-editor" class="stack">
       <label class="sr-only" for="create-key">key</label>
-      <input class="text-input" id="create-key" type="text" autocomplete="off" placeholder="key" required>
+      <input class="text-input" id="create-key" type="text" autocomplete="off" placeholder="Enter key" required>
       <label class="sr-only" for="create-contents">text</label>
-      <textarea class="text-editor" id="create-contents" spellcheck="false" placeholder=">_"></textarea>
+      <textarea class="text-editor" id="create-contents" spellcheck="false" placeholder="Enter text"></textarea>
       <button class="action-button" type="submit">save text</button>
       <div class="status-line" id="create-status" aria-live="polite"></div>
     </form>
