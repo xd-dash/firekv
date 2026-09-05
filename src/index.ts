@@ -19,6 +19,10 @@ type SessionClaims = { v: 1; exp: number; repository: string; run_id: string; sc
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 const reservedPrefix = 'terraform/'
+const maxStateBytes = 25 * 1024 * 1024
+// Leave headroom under Workers KV's 512-byte key limit for
+// `terraform/<scope>/history/deleted-<timestamp>-<uuid>.tfstate`.
+const maxScopeLength = 400
 
 const escapeHtml = (value: string) => value
   .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
@@ -27,7 +31,12 @@ const escapeHtml = (value: string) => value
 const encodeKeyPath = (key: string) => key.split('/').map(encodeURIComponent).join('/')
 const keyFromPath = (path: string) => {
   const encoded = path.slice('/file/'.length).replace(/\/$/, '')
-  return encoded ? encoded.split('/').map(decodeURIComponent).join('/') : ''
+  if (!encoded) return null
+  try {
+    return encoded.split('/').map(decodeURIComponent).join('/')
+  } catch {
+    return null
+  }
 }
 const isReservedKey = (key: string) => key.startsWith(reservedPrefix)
 
@@ -39,6 +48,7 @@ const b64uEncode = (value: ArrayBuffer | Uint8Array) => {
 }
 
 const b64uDecode = (value: string) => {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error('invalid base64url')
   const padded = value.replaceAll('-', '+').replaceAll('_', '/') + '='.repeat((4 - value.length % 4) % 4)
   return Uint8Array.from(atob(padded), (char) => char.charCodeAt(0))
 }
@@ -47,6 +57,14 @@ const parsePart = <T>(value: string): T => JSON.parse(decoder.decode(b64uDecode(
 const sessionSecret = (env: Bindings) => {
   const secret = env.FIREKV_SESSION_SECRET
   return secret && encoder.encode(secret).byteLength >= 32 ? secret : null
+}
+
+const sessionTtl = (env: Bindings) => {
+  const raw = env.FIREKV_SESSION_TTL_SECONDS?.trim()
+  if (!raw) return 3600
+  if (!/^\d+$/.test(raw)) return null
+  const ttl = Number(raw)
+  return Number.isSafeInteger(ttl) && ttl >= 300 && ttl <= 7200 ? ttl : null
 }
 
 const importHmacKey = (secret: string) => crypto.subtle.importKey(
@@ -68,7 +86,8 @@ const verifySession = async (token: string, secret: string): Promise<SessionClai
     )
     if (!valid) return null
     const claims = parsePart<SessionClaims>(payload)
-    if (claims.v !== 1 || !claims.scope || !claims.repository || !claims.run_id) return null
+    if (!claims || claims.v !== 1 || typeof claims.scope !== 'string' || typeof claims.repository !== 'string' || typeof claims.run_id !== 'string') return null
+    if (!normalizeScope(claims.scope) || !claims.repository || !claims.run_id) return null
     if (!Number.isInteger(claims.exp) || claims.exp <= Math.floor(Date.now() / 1000)) return null
     return claims
   } catch {
@@ -78,7 +97,9 @@ const verifySession = async (token: string, secret: string): Promise<SessionClai
 
 const normalizeScope = (value: string) => {
   const scope = value.trim().replace(/^\/+|\/+$/g, '')
-  if (!scope || scope.length > 512 || scope.includes('..') || !/^[A-Za-z0-9._/-]+$/.test(scope)) return null
+  if (!scope || scope.length > maxScopeLength || !/^[A-Za-z0-9._/-]+$/.test(scope)) return null
+  const segments = scope.split('/')
+  if (segments.some(segment => !segment || segment === '.' || segment === '..')) return null
   return scope
 }
 
@@ -95,19 +116,34 @@ const currentKey = (scope: string) => `${reservedPrefix}${scope}/terraform.tfsta
 const historyKey = (scope: string, revision: string) => `${reservedPrefix}${scope}/history/${revision}.tfstate`
 const revisionId = () => `${new Date().toISOString().replaceAll(':', '').replaceAll('.', '')}-${crypto.randomUUID()}`
 
-const authorizeState = async (request: Request, env: Bindings, scope: string) => {
-  const secret = sessionSecret(env)
-  const authorization = request.headers.get('authorization')
-  if (!secret || !authorization?.startsWith('Basic ')) return null
+const basicToken = (authorization: string | null) => {
+  if (!authorization) return null
+  const match = authorization.trim().match(/^Basic\s+([A-Za-z0-9+/=]+)$/i)
+  if (!match) return null
   try {
-    const decoded = atob(authorization.slice(6))
+    const decoded = atob(match[1])
     const separator = decoded.indexOf(':')
     if (separator < 0 || decoded.slice(0, separator) !== 'firekv') return null
-    const claims = await verifySession(decoded.slice(separator + 1), secret)
-    return claims?.scope === scope ? claims : null
+    const token = decoded.slice(separator + 1)
+    return token || null
   } catch {
     return null
   }
+}
+
+const authorizeState = async (request: Request, env: Bindings, scope: string) => {
+  const secret = sessionSecret(env)
+  const token = basicToken(request.headers.get('authorization'))
+  if (!secret || !token) return null
+  const claims = await verifySession(token, secret)
+  return claims?.scope === scope ? claims : null
+}
+
+const stateTooLarge = (request: Request) => {
+  const raw = request.headers.get('content-length')
+  if (!raw) return false
+  if (!/^\d+$/.test(raw)) return true
+  return Number(raw) > maxStateBytes
 }
 
 const shell = (title: string, body: string) => `<!doctype html>
@@ -161,7 +197,7 @@ export function createFireKVApp(githubOptions: GitHubAuthOptions = {}) {
 
   app.put('/file/*', async (c) => {
     const key = keyFromPath(c.req.path)
-    if (!key) return c.text('missing key', 400)
+    if (!key) return c.text('missing or malformed key', 400)
     if (isReservedKey(key)) return c.notFound()
     const value = await c.req.text()
     await c.env.FILES.put(key, value, { metadata: { contentType: c.req.header('content-type') || 'text/plain; charset=utf-8' } })
@@ -172,7 +208,8 @@ export function createFireKVApp(githubOptions: GitHubAuthOptions = {}) {
 
   app.post('/auth/github-oidc', async (c) => {
     const secret = sessionSecret(c.env)
-    if (!secret) return c.json({ error: 'session_auth_unconfigured' }, 503, { 'cache-control': 'no-store' })
+    const ttl = sessionTtl(c.env)
+    if (!secret || ttl === null) return c.json({ error: 'session_auth_unconfigured' }, 503, { 'cache-control': 'no-store' })
 
     const identity = c.get('authIdentity')
     const repository = identity.attributes.repository
@@ -182,11 +219,9 @@ export function createFireKVApp(githubOptions: GitHubAuthOptions = {}) {
     }
 
     const body: { scope?: string } = await c.req.json<{ scope?: string }>().catch(() => ({}))
-    const scope = body.scope ? normalizeScope(body.scope) : null
+    const scope = typeof body.scope === 'string' ? normalizeScope(body.scope) : null
     if (!scope) return c.json({ error: 'invalid_scope' }, 400, { 'cache-control': 'no-store' })
 
-    const configured = Number.parseInt(c.env.FIREKV_SESSION_TTL_SECONDS || '3600', 10)
-    const ttl = Number.isFinite(configured) ? Math.min(Math.max(configured, 300), 7200) : 3600
     const claims: SessionClaims = {
       v: 1,
       exp: Math.floor(Date.now() / 1000) + ttl,
@@ -205,7 +240,7 @@ export function createFireKVApp(githubOptions: GitHubAuthOptions = {}) {
 
   app.get('/tfstate/*', async (c) => {
     const scope = scopeFromPath(c.req.path)
-    if (!scope) return c.text('invalid state scope', 400)
+    if (!scope) return c.text('invalid state scope', 400, { 'cache-control': 'no-store' })
     if (!await authorizeState(c.req.raw, c.env, scope)) return c.text('unauthorized', 401, { 'WWW-Authenticate': 'Basic realm="firekv"', 'cache-control': 'no-store' })
     const state = await c.env.FILES.get(currentKey(scope), 'arrayBuffer')
     if (state === null) return new Response(null, { status: 404, headers: { 'cache-control': 'no-store' } })
@@ -214,11 +249,14 @@ export function createFireKVApp(githubOptions: GitHubAuthOptions = {}) {
 
   app.post('/tfstate/*', async (c) => {
     const scope = scopeFromPath(c.req.path)
-    if (!scope) return c.text('invalid state scope', 400)
+    if (!scope) return c.text('invalid state scope', 400, { 'cache-control': 'no-store' })
     const identity = await authorizeState(c.req.raw, c.env, scope)
     if (!identity) return c.text('unauthorized', 401, { 'WWW-Authenticate': 'Basic realm="firekv"', 'cache-control': 'no-store' })
+    if (stateTooLarge(c.req.raw)) return c.text('state exceeds Workers KV value limit', 413, { 'cache-control': 'no-store' })
 
     const state = await c.req.arrayBuffer()
+    if (state.byteLength > maxStateBytes) return c.text('state exceeds Workers KV value limit', 413, { 'cache-control': 'no-store' })
+
     const revision = revisionId()
     const metadata = { contentType: 'application/json', revision, repository: identity.repository, runId: identity.run_id, savedAt: new Date().toISOString() }
     await c.env.FILES.put(historyKey(scope, revision), state, { metadata })
@@ -228,7 +266,7 @@ export function createFireKVApp(githubOptions: GitHubAuthOptions = {}) {
 
   app.delete('/tfstate/*', async (c) => {
     const scope = scopeFromPath(c.req.path)
-    if (!scope) return c.text('invalid state scope', 400)
+    if (!scope) return c.text('invalid state scope', 400, { 'cache-control': 'no-store' })
     const identity = await authorizeState(c.req.raw, c.env, scope)
     if (!identity) return c.text('unauthorized', 401, { 'WWW-Authenticate': 'Basic realm="firekv"', 'cache-control': 'no-store' })
 
