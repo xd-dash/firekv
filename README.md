@@ -27,7 +27,9 @@ terraform/cloudflare/dashxd/history/<revision>.tfstate
 
 Every POST writes a history object before replacing the current object. DELETE also archives the previous current value. History is recovery/audit material, not a concurrency primitive.
 
-Cloudflare KV is not used for Terraform locking. Do not configure `lock_address` or `unlock_address` against this implementation. If concurrent writers to one state become necessary, add a strongly coordinated lock service such as a Durable Object rather than implementing a KV read-then-write mutex.
+This deployment intentionally accepts Workers KV's eventual consistency because it is a sandbox state backend. The operational invariant is one active Terraform writer per exact state scope. FireKV does not expose Terraform lock/unlock endpoints and does not implement a fake KV mutex. If stronger coordination becomes necessary, move state coordination to a strongly consistent primitive instead of layering read-then-write locking on KV.
+
+FireKV also enforces the relevant Workers KV object limits at its boundary: state values are capped at 25 MiB and scope length is bounded with headroom under the 512-byte KV key limit for history keys.
 
 Terraform configuration remains small and composable:
 
@@ -127,21 +129,22 @@ FIREKV_SESSION_TTL_SECONDS
 FILES
 ```
 
-Set `FIREKV_SESSION_SECRET` as a random secret of at least 32 bytes; never commit it as a Wrangler var:
+`FIREKV_SESSION_TTL_SECONDS` must be an integer from 300 through 7200 seconds. `FIREKV_SESSION_SECRET` must contain at least 32 bytes of secret material and must never be committed as a Wrangler var.
 
-```sh
-openssl rand -base64 48 | npx wrangler secret put FIREKV_SESSION_SECRET
+## Cloudflare deployment
+
+Huram ABI owns the production deployment. The intended exact Custom Domains are:
+
+```text
+https://firekv.dashxd.com
+https://kv.dashxd.com
 ```
 
-Replace the placeholder `FILES` namespace id before production deployment.
+Both hostnames route to the same FireKV Worker and the same `FILES` Workers KV namespace. Because these are Workers Custom Domains and FireKV has no Workers Static Assets binding, every path on those hostnames enters the Worker; there is no asset-router bypass and no `assets.run_worker_first` setting required in the current deployment.
 
-## Cloudflare Access and static assets
+`workers.dev` and preview URLs are disabled. The session signing secret is injected as secret material during deployment. Concrete GitHub authorization policy comes from Huram's `master` Environment rather than this repository.
 
-Cloudflare Access can independently protect a browser UI or an entire production Worker/custom domain. It is separate from Terraform's state credential. Do not reuse a Cloudflare management API token as a FireKV data-plane credential.
-
-Terraform's HTTP backend does not provide a general arbitrary-header mechanism, while Cloudflare Access service tokens normally use Cloudflare-specific headers. FireKV therefore uses the GitHub-identity-to-Basic capability exchange for Terraform state access.
-
-If Workers Static Assets are added later, protected API paths must continue to enter the Worker first; configure `assets.run_worker_first` for `/auth/*` and `/tfstate/*` (or `true`) so an asset router cannot bypass API middleware.
+Cloudflare Access can independently protect a future browser UI, but it is not used as Terraform's state credential. Do not reuse a Cloudflare management API token as a FireKV data-plane credential.
 
 ## Local qualification
 
@@ -152,7 +155,7 @@ npm run typecheck
 npm run dry-run
 ```
 
-The tests inject a synthetic GitHub `AuthProvider`, mint a FireKV scope credential, write Terraform-state bytes, read them back, and verify that the same credential cannot access another scope.
+The tests inject a synthetic GitHub `AuthProvider`, mint a FireKV scope credential, write Terraform-state bytes, read them back, and verify cross-scope rejection, malformed paths/scopes, invalid TTLs, Basic-auth parsing, and Workers KV size boundaries.
 
 For the file UI:
 
@@ -160,3 +163,5 @@ For the file UI:
 npx wrangler kv key put hello.txt 'hello from kv' --binding FILES --local --persist-to .wrangler/state
 npm run dev
 ```
+
+See `FIREKV_IDIOMS.md` for the maintenance and deployment invariants.
