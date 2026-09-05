@@ -10,7 +10,7 @@
     "test": "tsx --test test/**/*.test.ts"
   },
   "dependencies": {
-    "@xd-dash/auth.net.im": "github:xd-dash/auth.net.im#42800631d92ad9dbf32e70ab87880be6c3328d16",
+    "@xd-dash/auth.net.im": "github:xd-dash/auth.net.im#ba03cb2ada69ee399c05468f39bed0be67ee6f8d",
     "hono": "4.13.5"
   },
   "devDependencies": {
