@@ -3,9 +3,8 @@
   "name": "firekv",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-04",
-  "vars": {
-    "FIREKV_SESSION_TTL_SECONDS": "3600"
-  },
+  "workers_dev": false,
+  "preview_urls": false,
   "kv_namespaces": [{
     "binding": "FILES",
     "id": "00000000000000000000000000000000"
