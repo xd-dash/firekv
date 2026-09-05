@@ -16,24 +16,42 @@ type Bindings = GitHubEnv & {
 
 type SessionClaims = { v: 1; exp: number; repository: string; run_id: string; scope: string }
 
+type TextBodyResult =
+  | { ok: true; value: string; bytes: number }
+  | { ok: false; status: 400 | 413 | 415; message: string }
+
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
+const strictUtf8Decoder = new TextDecoder('utf-8', { fatal: true })
 const reservedPrefix = 'terraform/'
-const maxStateBytes = 25 * 1024 * 1024
+const maxKvValueBytes = 25 * 1024 * 1024
 // Leave headroom under Workers KV's 512-byte key limit for
 // `terraform/<scope>/history/deleted-<timestamp>-<uuid>.tfstate`.
 const maxScopeLength = 400
+const maxPublicKeyBytes = 512
+
+const noStore = { 'cache-control': 'no-store' }
 
 const escapeHtml = (value: string) => value
   .replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
   .replaceAll('"', '&quot;').replaceAll("'", '&#39;')
 
 const encodeKeyPath = (key: string) => key.split('/').map(encodeURIComponent).join('/')
+
+const normalizePublicKey = (value: string) => {
+  const key = value.trim().replace(/^\/+|\/+$/g, '')
+  if (!key || encoder.encode(key).byteLength > maxPublicKeyBytes) return null
+  if (/[\u0000-\u001f\u007f]/.test(key) || key.includes('\\')) return null
+  const segments = key.split('/')
+  if (segments.some(segment => !segment || segment === '.' || segment === '..')) return null
+  return key
+}
+
 const keyFromPath = (path: string) => {
   const encoded = path.slice('/file/'.length).replace(/\/$/, '')
   if (!encoded) return null
   try {
-    return encoded.split('/').map(decodeURIComponent).join('/')
+    return normalizePublicKey(encoded.split('/').map(decodeURIComponent).join('/'))
   } catch {
     return null
   }
@@ -139,17 +157,37 @@ const authorizeState = async (request: Request, env: Bindings, scope: string) =>
   return claims?.scope === scope ? claims : null
 }
 
-const stateTooLarge = (request: Request) => {
+const bodyTooLarge = (request: Request) => {
   const raw = request.headers.get('content-length')
   if (!raw) return false
   if (!/^\d+$/.test(raw)) return true
-  return Number(raw) > maxStateBytes
+  return Number(raw) > maxKvValueBytes
+}
+
+const readPlainTextBody = async (request: Request): Promise<TextBodyResult> => {
+  const contentType = request.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
+  if (contentType !== 'text/plain') {
+    return { ok: false, status: 415, message: 'public values require text/plain UTF-8 bodies' }
+  }
+  if (bodyTooLarge(request)) {
+    return { ok: false, status: 413, message: 'text exceeds Workers KV value limit' }
+  }
+
+  const body = await request.arrayBuffer()
+  if (body.byteLength > maxKvValueBytes) {
+    return { ok: false, status: 413, message: 'text exceeds Workers KV value limit' }
+  }
+  try {
+    return { ok: true, value: strictUtf8Decoder.decode(body), bytes: body.byteLength }
+  } catch {
+    return { ok: false, status: 400, message: 'body must be valid UTF-8 text' }
+  }
 }
 
 const shell = (title: string, body: string) => `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(title)} · firekv</title>
-<style>:root{color-scheme:light dark;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}body{max-width:1100px;margin:0 auto;padding:2rem}a{color:inherit}textarea{width:100%;min-height:65vh;box-sizing:border-box;padding:1rem;font:inherit;tab-size:2}.bar{display:flex;gap:.75rem;align-items:center;margin:1rem 0}button{padding:.55rem .9rem;font:inherit;cursor:pointer}#status{opacity:.75}</style>
+<style>:root{color-scheme:light dark;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}body{max-width:1100px;margin:0 auto;padding:2rem}a{color:inherit}textarea{width:100%;min-height:55vh;box-sizing:border-box;padding:1rem;font:inherit;tab-size:2}.bar{display:flex;gap:.75rem;align-items:center;margin:1rem 0;flex-wrap:wrap}input[type=text]{min-width:22rem;max-width:100%;padding:.55rem;font:inherit}button{padding:.55rem .9rem;font:inherit;cursor:pointer}#status,#create-status{opacity:.75}</style>
 </head><body>${body}</body></html>`
 
 export function createFireKVApp(githubOptions: GitHubAuthOptions = {}) {
@@ -162,7 +200,7 @@ export function createFireKVApp(githubOptions: GitHubAuthOptions = {}) {
       return c.json({ error: error.code, message: error.message }, error.status as 401 | 403 | 500, headers)
     }
     console.error(error)
-    return c.json({ error: 'internal_error', message: 'internal server error' }, 500, { 'cache-control': 'no-store' })
+    return c.json({ error: 'internal_error', message: 'internal server error' }, 500, noStore)
   })
 
   app.get('/', async (c) => {
@@ -171,18 +209,51 @@ export function createFireKVApp(githubOptions: GitHubAuthOptions = {}) {
     const items = keys.length
       ? keys.map(({ name }) => `<li><a href="/file/${encodeKeyPath(name)}/">${escapeHtml(name)}</a></li>`).join('')
       : '<li><em>KV is empty.</em></li>'
-    return c.html(shell('files', `<h1>firekv</h1><p>Raw string values stored in <code>FILES</code>.</p><ul>${items}</ul>`))
+    c.header('cache-control', 'no-store')
+    return c.html(shell('files', `<h1>firekv</h1>
+      <p>Public UTF-8 text values stored in <code>FILES</code>. Terraform state is isolated under a reserved protected namespace.</p>
+      <h2>Create text</h2>
+      <form id="create-editor">
+        <div class="bar"><label>Key <input id="create-key" type="text" autocomplete="off" placeholder="notes/example.txt" required></label></div>
+        <textarea id="create-contents" spellcheck="false" placeholder="Enter text only"></textarea>
+        <div class="bar"><button type="submit">Save text</button><span id="create-status"></span></div>
+      </form>
+      <h2>Saved text</h2><ul>${items}</ul>
+      <script type="module">
+        const form = document.querySelector('#create-editor')
+        const key = document.querySelector('#create-key')
+        const contents = document.querySelector('#create-contents')
+        const status = document.querySelector('#create-status')
+        form.addEventListener('submit', async (event) => {
+          event.preventDefault(); status.textContent = 'saving…'
+          const path = key.value.trim().split('/').map(encodeURIComponent).join('/')
+          const response = await fetch('/file/' + path, { method: 'PUT', headers: { 'content-type': 'text/plain; charset=utf-8' }, body: contents.value })
+          if (response.ok) {
+            status.textContent = 'saved'
+            location.href = '/file/' + path + '/'
+          } else {
+            status.textContent = 'save failed (' + response.status + '): ' + await response.text()
+          }
+        })
+      </script>`))
   })
 
   app.get('/file/*', async (c) => {
     const key = keyFromPath(c.req.path)
     if (!key || isReservedKey(key)) return c.notFound()
-    const value = await c.env.FILES.get(key, 'text')
-    if (value === null) return c.notFound()
+    const body = await c.env.FILES.get(key, 'arrayBuffer')
+    if (body === null) return c.notFound()
+    let value: string
+    try {
+      value = strictUtf8Decoder.decode(body)
+    } catch {
+      return c.text('stored value is not valid UTF-8 text', 415, noStore)
+    }
+    c.header('cache-control', 'no-store')
     return c.html(shell(key, `
       <p><a href="/">← files</a></p><h1>${escapeHtml(key)}</h1>
       <form id="editor"><textarea id="contents" spellcheck="false">${escapeHtml(value)}</textarea>
-      <div class="bar"><button type="submit">Save to KV</button><span id="status"></span></div></form>
+      <div class="bar"><button type="submit">Save text</button><span id="status"></span></div></form>
       <script type="module">
         const form = document.querySelector('#editor')
         const contents = document.querySelector('#contents')
@@ -190,18 +261,19 @@ export function createFireKVApp(githubOptions: GitHubAuthOptions = {}) {
         form.addEventListener('submit', async (event) => {
           event.preventDefault(); status.textContent = 'saving…'
           const response = await fetch('./', { method: 'PUT', headers: { 'content-type': 'text/plain; charset=utf-8' }, body: contents.value })
-          status.textContent = response.ok ? 'saved' : 'save failed (' + response.status + ')'
+          status.textContent = response.ok ? 'saved' : 'save failed (' + response.status + '): ' + await response.text()
         })
       </script>`))
   })
 
   app.put('/file/*', async (c) => {
     const key = keyFromPath(c.req.path)
-    if (!key) return c.text('missing or malformed key', 400)
+    if (!key) return c.text('missing, malformed, or overlong key', 400, noStore)
     if (isReservedKey(key)) return c.notFound()
-    const value = await c.req.text()
-    await c.env.FILES.put(key, value, { metadata: { contentType: c.req.header('content-type') || 'text/plain; charset=utf-8' } })
-    return c.json({ ok: true, key, bytes: encoder.encode(value).byteLength })
+    const body = await readPlainTextBody(c.req.raw)
+    if (!body.ok) return c.text(body.message, body.status, noStore)
+    await c.env.FILES.put(key, body.value, { metadata: { contentType: 'text/plain; charset=utf-8' } })
+    return c.json({ ok: true, key, bytes: body.bytes }, 200, noStore)
   })
 
   app.use('/auth/github-oidc', GitHubProvider.middleware(githubOptions))
@@ -209,18 +281,18 @@ export function createFireKVApp(githubOptions: GitHubAuthOptions = {}) {
   app.post('/auth/github-oidc', async (c) => {
     const secret = sessionSecret(c.env)
     const ttl = sessionTtl(c.env)
-    if (!secret || ttl === null) return c.json({ error: 'session_auth_unconfigured' }, 503, { 'cache-control': 'no-store' })
+    if (!secret || ttl === null) return c.json({ error: 'session_auth_unconfigured' }, 503, noStore)
 
     const identity = c.get('authIdentity')
     const repository = identity.attributes.repository
     const runID = identity.attributes.run_id
     if (!repository || !runID) {
-      return c.json({ error: 'workload_identity_incomplete' }, 403, { 'cache-control': 'no-store' })
+      return c.json({ error: 'workload_identity_incomplete' }, 403, noStore)
     }
 
     const body: { scope?: string } = await c.req.json<{ scope?: string }>().catch(() => ({}))
     const scope = typeof body.scope === 'string' ? normalizeScope(body.scope) : null
-    if (!scope) return c.json({ error: 'invalid_scope' }, 400, { 'cache-control': 'no-store' })
+    if (!scope) return c.json({ error: 'invalid_scope' }, 400, noStore)
 
     const claims: SessionClaims = {
       v: 1,
@@ -235,40 +307,40 @@ export function createFireKVApp(githubOptions: GitHubAuthOptions = {}) {
       username: 'firekv', password,
       address: `${origin}/tfstate/${scope.split('/').map(encodeURIComponent).join('/')}`,
       expires_at: new Date(claims.exp * 1000).toISOString(), scope,
-    }, 200, { 'cache-control': 'no-store' })
+    }, 200, noStore)
   })
 
   app.get('/tfstate/*', async (c) => {
     const scope = scopeFromPath(c.req.path)
-    if (!scope) return c.text('invalid state scope', 400, { 'cache-control': 'no-store' })
-    if (!await authorizeState(c.req.raw, c.env, scope)) return c.text('unauthorized', 401, { 'WWW-Authenticate': 'Basic realm="firekv"', 'cache-control': 'no-store' })
+    if (!scope) return c.text('invalid state scope', 400, noStore)
+    if (!await authorizeState(c.req.raw, c.env, scope)) return c.text('unauthorized', 401, { 'WWW-Authenticate': 'Basic realm="firekv"', ...noStore })
     const state = await c.env.FILES.get(currentKey(scope), 'arrayBuffer')
-    if (state === null) return new Response(null, { status: 404, headers: { 'cache-control': 'no-store' } })
-    return new Response(state, { headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } })
+    if (state === null) return new Response(null, { status: 404, headers: noStore })
+    return new Response(state, { headers: { 'content-type': 'application/json', ...noStore } })
   })
 
   app.post('/tfstate/*', async (c) => {
     const scope = scopeFromPath(c.req.path)
-    if (!scope) return c.text('invalid state scope', 400, { 'cache-control': 'no-store' })
+    if (!scope) return c.text('invalid state scope', 400, noStore)
     const identity = await authorizeState(c.req.raw, c.env, scope)
-    if (!identity) return c.text('unauthorized', 401, { 'WWW-Authenticate': 'Basic realm="firekv"', 'cache-control': 'no-store' })
-    if (stateTooLarge(c.req.raw)) return c.text('state exceeds Workers KV value limit', 413, { 'cache-control': 'no-store' })
+    if (!identity) return c.text('unauthorized', 401, { 'WWW-Authenticate': 'Basic realm="firekv"', ...noStore })
+    if (bodyTooLarge(c.req.raw)) return c.text('state exceeds Workers KV value limit', 413, noStore)
 
     const state = await c.req.arrayBuffer()
-    if (state.byteLength > maxStateBytes) return c.text('state exceeds Workers KV value limit', 413, { 'cache-control': 'no-store' })
+    if (state.byteLength > maxKvValueBytes) return c.text('state exceeds Workers KV value limit', 413, noStore)
 
     const revision = revisionId()
     const metadata = { contentType: 'application/json', revision, repository: identity.repository, runId: identity.run_id, savedAt: new Date().toISOString() }
     await c.env.FILES.put(historyKey(scope, revision), state, { metadata })
     await c.env.FILES.put(currentKey(scope), state, { metadata })
-    return c.json({ ok: true, scope, revision, bytes: state.byteLength }, 200, { 'cache-control': 'no-store' })
+    return c.json({ ok: true, scope, revision, bytes: state.byteLength }, 200, noStore)
   })
 
   app.delete('/tfstate/*', async (c) => {
     const scope = scopeFromPath(c.req.path)
-    if (!scope) return c.text('invalid state scope', 400, { 'cache-control': 'no-store' })
+    if (!scope) return c.text('invalid state scope', 400, noStore)
     const identity = await authorizeState(c.req.raw, c.env, scope)
-    if (!identity) return c.text('unauthorized', 401, { 'WWW-Authenticate': 'Basic realm="firekv"', 'cache-control': 'no-store' })
+    if (!identity) return c.text('unauthorized', 401, { 'WWW-Authenticate': 'Basic realm="firekv"', ...noStore })
 
     const current = await c.env.FILES.get(currentKey(scope), 'arrayBuffer')
     if (current !== null) {
@@ -278,7 +350,7 @@ export function createFireKVApp(githubOptions: GitHubAuthOptions = {}) {
       })
     }
     await c.env.FILES.delete(currentKey(scope))
-    return new Response(null, { status: 200, headers: { 'cache-control': 'no-store' } })
+    return new Response(null, { status: 200, headers: noStore })
   })
 
   return app
