@@ -6,11 +6,16 @@
   "scripts": {
     "dev": "wrangler dev --local --persist-to .wrangler/state",
     "dry-run": "wrangler deploy --dry-run --outdir dist",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/**/*.test.ts"
   },
-  "dependencies": { "hono": "4.13.5" },
+  "dependencies": {
+    "@xd-dash/auth.net.im": "github:xd-dash/auth.net.im#42800631d92ad9dbf32e70ab87880be6c3328d16",
+    "hono": "4.13.5"
+  },
   "devDependencies": {
     "@cloudflare/workers-types": "latest",
+    "tsx": "4.20.5",
     "typescript": "latest",
     "wrangler": "4.129.0"
   }
