@@ -65,6 +65,28 @@ state routes remain unchanged until deployment and cutover are verified.
 
 `node --test tfstate/worker.test.mjs`
 
+For the full disposable local Wrangler/workerd proof:
+
+```sh
+cd tfstate
+npm ci --ignore-scripts --no-audit --no-fund
+TERRAFORM_BIN="$(command -v terraform)" npm run qualify-local
+```
+
+The local harness starts the exact production handler on loopback HTTPS with
+Wrangler's native `access.dev` identities and a fresh local KV persistence
+directory. It proves real Terraform HTTP apply/fresh-init recovery, exact-byte
+storage, restart recovery, scope isolation, deletion, and read/write/delete
+denial for anonymous, wrong-owner and wrong-audience profiles. Only the local
+test client accepts the disposable self-signed certificate. No production auth
+bypass is added. A loopback HTTP proxy adapts Terraform to that local certificate;
+it is test infrastructure, not a production credential bridge.
+
+No Cloudflare account/token, live Access application, GCS, or deployed Worker is
+used. Native local Access simulation is not evidence of real IdP authentication
+or deployed policy correctness. Local KV does not reproduce edge eventual
+consistency. All child processes and temporary state are cleaned in finally.
+
 From the repository root after the locked dependencies are installed:
 `npx wrangler deploy --config tfstate/wrangler.jsonc --dry-run`
 

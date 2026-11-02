@@ -16,6 +16,17 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
-      - run: node --test tfstate/worker.test.mjs
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.8'
+          terraform_wrapper: false
       - run: npm ci --ignore-scripts --no-audit --no-fund
-      - run: npx wrangler deploy --config tfstate/wrangler.jsonc --dry-run
+        working-directory: tfstate
+      - run: npm test
+        working-directory: tfstate
+      - run: npx wrangler deploy --config wrangler.jsonc --dry-run
+        working-directory: tfstate
+        env:
+          WRANGLER_SEND_METRICS: 'false'
+      - run: TERRAFORM_BIN="$(command -v terraform)" npm run qualify-local
+        working-directory: tfstate
