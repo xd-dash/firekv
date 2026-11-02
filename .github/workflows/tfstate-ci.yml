@@ -1,0 +1,32 @@
+name: Private tfstate Worker
+on:
+  pull_request:
+    paths: ['tfstate/**', '.github/workflows/tfstate-ci.yml']
+  push:
+    branches: [main]
+    paths: ['tfstate/**', '.github/workflows/tfstate-ci.yml']
+permissions:
+  contents: read
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.8'
+          terraform_wrapper: false
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: tfstate
+      - run: npm test
+        working-directory: tfstate
+      - run: npx wrangler deploy --config wrangler.jsonc --dry-run
+        working-directory: tfstate
+        env:
+          WRANGLER_SEND_METRICS: 'false'
+      - run: TERRAFORM_BIN="$(command -v terraform)" npm run qualify-local
+        working-directory: tfstate
