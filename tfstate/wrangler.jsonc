@@ -1,0 +1,10 @@
+{
+  "name": "firekv-tfstate",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-11-02",
+  "workers_dev": false,
+  "preview_urls": false,
+  "kv_namespaces": [
+    { "binding": "TFSTATE", "id": "00000000000000000000000000000000" }
+  ]
+}
