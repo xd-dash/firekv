@@ -29,6 +29,7 @@ export async function verifyGithub(jwt, config, fetchJwks = fetch, now = Date.no
       claims.ref !== config.ref ||
       claims.environment !== config.environment ||
       claims.repository_owner !== config.owner ||
+      claims.workflow_ref !== config.workflowRef ||
       !Number.isInteger(claims.iat) || !Number.isInteger(claims.exp) ||
       claims.iat > seconds + 30 || claims.exp <= seconds || claims.exp > seconds + 600 ||
       claims.exp - claims.iat > 600 ||
