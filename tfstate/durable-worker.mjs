@@ -6,8 +6,8 @@ const scopeValid = scope => typeof scope === 'string' && scope.length < 200 && /
 function config(env) {
   if (!env.TFSTATE_DURABLE || !env.SESSION_SIGNING_KEY || !env.OIDC_AUDIENCE ||
       !env.GITHUB_REPOSITORY || !env.GITHUB_REF || !env.GITHUB_ENVIRONMENT ||
-      !env.GITHUB_OWNER || !env.STATE_HOST || !env.STATE_SCOPE) throw new Error('Unconfigured')
-  return { audience: env.OIDC_AUDIENCE, repository: env.GITHUB_REPOSITORY, ref: env.GITHUB_REF, environment: env.GITHUB_ENVIRONMENT, owner: env.GITHUB_OWNER }
+      !env.GITHUB_OWNER || !env.GITHUB_WORKFLOW_REF || !env.STATE_HOST || !env.STATE_SCOPE) throw new Error('Unconfigured')
+  return { audience: env.OIDC_AUDIENCE, repository: env.GITHUB_REPOSITORY, ref: env.GITHUB_REF, environment: env.GITHUB_ENVIRONMENT, owner: env.GITHUB_OWNER, workflowRef: env.GITHUB_WORKFLOW_REF }
 }
 
 export default {
