@@ -19,6 +19,7 @@
     "GITHUB_REPOSITORY": "xd-dash/huram-abi-master",
     "GITHUB_OWNER": "xd-dash",
     "GITHUB_REF": "refs/heads/codex/smoke-auth-cloudflare-deployment-consolidation",
-    "GITHUB_ENVIRONMENT": "cloudflare-terraform"
+    "GITHUB_ENVIRONMENT": "cloudflare-terraform",
+    "GITHUB_WORKFLOW_REF": "xd-dash/huram-abi-master/.github/workflows/plan-dashxd-terraform.yml@refs/heads/codex/smoke-auth-cloudflare-deployment-consolidation"
   }
 }
