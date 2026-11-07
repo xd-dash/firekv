@@ -34,5 +34,5 @@ test('OIDC JWT verifies RS256 signature, issuer, exact workflow, environment, au
     { aud: 'other' }, { repository: 'attacker/repo' }, { environment: 'other' },
     { workflow_ref: 'attacker/workflow' }, { exp: 999999 }, { ref: 'refs/heads/main' },
   ]) await assert.rejects(verifyGithub(await token(claims), config, fetchJwks, now))
-  await assert.rejects(verifyGithub((await token()).replace(/.$/, 'x'), config, fetchJwks, now))
+  await assert.rejects(verifyGithub((await token()).replace(/\.([A-Za-z0-9_-])/, (_, c) => '.' + (c === 'A' ? 'B' : 'A')), config, fetchJwks, now))
 })
