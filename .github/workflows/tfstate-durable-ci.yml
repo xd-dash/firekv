@@ -4,7 +4,7 @@ on:
     branches: [codex/tfstate-durable-oidc]
     paths:
       - tfstate/durable*
-      - tfstate/oidc-auth.mjs
+      - tfstate/oidc*
       - tfstate/wrangler.durable.jsonc
       - .github/workflows/tfstate-durable-ci.yml
 permissions:
@@ -24,7 +24,7 @@ jobs:
         with:
           node-version: '22'
       - name: Test durable state and OIDC session logic
-        run: node --test tfstate/durable.test.mjs
+        run: node --test tfstate/durable.test.mjs tfstate/oidc.test.mjs
       - name: Qualify Worker bundle without deploying
         working-directory: tfstate
         run: |
