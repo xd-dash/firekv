@@ -266,3 +266,45 @@ test('GitHub provider middleware rejects a missing bearer before capability issu
     message: 'missing bearer token',
   })
 })
+
+
+test('GitHub OIDC bearer assertions cannot authorize Terraform state routes', async () => {
+  const { namespace, entries } = memoryKV()
+  const app = createFireKVApp({ provider })
+  const env = { FILES: namespace, FIREKV_SESSION_SECRET: sessionSecret }
+
+  for (const method of ['GET', 'POST', 'DELETE']) {
+    const response = await app.request('https://firekv.example/tfstate/terraform/example', {
+      method,
+      headers: { authorization: 'Bearer synthetic' },
+      ...(method === 'POST' ? { body: 'untrusted state' } : {}),
+    }, env)
+    assert.equal(response.status, 401, method)
+    assert.equal(response.headers.get('cache-control'), 'no-store')
+  }
+  assert.equal(entries.size, 0)
+})
+
+test('Terraform Basic capabilities cannot authorize the GitHub OIDC exchange route', async () => {
+  const { namespace } = memoryKV()
+  const app = createFireKVApp()
+  const response = await app.request('https://firekv.example/auth/github-oidc', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Basic ${btoa('firekv:scope-bound-session')}`,
+    },
+    body: JSON.stringify({ scope: 'terraform/example' }),
+  }, {
+    FILES: namespace,
+    FIREKV_SESSION_SECRET: sessionSecret,
+    GITHUB_AUDIENCE: 'https://audience.example',
+    GITHUB_OWNER: 'example-org',
+    GITHUB_REPOSITORIES: 'example-org/iac',
+  })
+
+  assert.equal(response.status, 401)
+  assert.equal(response.headers.get('www-authenticate'), 'Bearer')
+  const body = await response.json() as { password?: string }
+  assert.equal(body.password, undefined)
+})

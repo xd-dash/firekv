@@ -56,6 +56,8 @@ Capability properties:
 
 Authentication and Terraform-state responses use `Cache-Control: no-store`. Failed Basic auth returns a Basic challenge; failed GitHub bearer auth is normalized by the auth provider boundary.
 
+In the Hono application, `GitHubProvider.middleware()` is mounted only on `/auth/github-oidc`. A separate middleware on `/tfstate/*` validates the short-lived Basic capability and attaches its verified scope and workload identity to the Hono context before any state handler runs. Do not add a global authentication middleware that lets one credential type satisfy the other route family. Tests must prove that a GitHub OIDC bearer cannot read or mutate state, a Terraform Basic capability cannot mint another capability, and public text routes cannot access the reserved Terraform prefix.
+
 ## Terraform state contract
 
 FireKV implements the built-in Terraform HTTP backend operations:
