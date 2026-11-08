@@ -16,6 +16,7 @@ type Bindings = GitHubEnv & {
 }
 
 type SessionClaims = { v: 1; exp: number; repository: string; run_id: string; scope: string }
+type FireKVVariables = GitHubAuthVariables & { stateIdentity: SessionClaims; stateScope: string }
 
 type TextBodyResult =
   | { ok: true; value: string; bytes: number }
@@ -186,7 +187,7 @@ const readPlainTextBody = async (request: Request): Promise<TextBodyResult> => {
 }
 
 export function createFireKVApp(githubOptions: GitHubAuthOptions = {}) {
-  const app = new Hono<{ Bindings: Bindings; Variables: GitHubAuthVariables }>({ strict: false })
+  const app = new Hono<{ Bindings: Bindings; Variables: FireKVVariables }>({ strict: false })
 
   app.onError((error, c) => {
     if (error instanceof AuthError) {
@@ -267,20 +268,26 @@ export function createFireKVApp(githubOptions: GitHubAuthOptions = {}) {
     }, 200, noStore)
   })
 
-  app.get('/tfstate/*', async (c) => {
+  app.use('/tfstate/*', async (c, next) => {
     const scope = scopeFromPath(c.req.path)
     if (!scope) return c.text('invalid state scope', 400, noStore)
-    if (!await authorizeState(c.req.raw, c.env, scope)) return c.text('unauthorized', 401, { 'WWW-Authenticate': 'Basic realm="firekv"', ...noStore })
+    const identity = await authorizeState(c.req.raw, c.env, scope)
+    if (!identity) return c.text('unauthorized', 401, { 'WWW-Authenticate': 'Basic realm="firekv"', ...noStore })
+    c.set('stateIdentity', identity)
+    c.set('stateScope', scope)
+    await next()
+  })
+
+  app.get('/tfstate/*', async (c) => {
+    const scope = c.get('stateScope')
     const state = await c.env.FILES.get(currentKey(scope), 'arrayBuffer')
     if (state === null) return new Response(null, { status: 404, headers: noStore })
     return new Response(state, { headers: { 'content-type': 'application/json', ...noStore } })
   })
 
   app.post('/tfstate/*', async (c) => {
-    const scope = scopeFromPath(c.req.path)
-    if (!scope) return c.text('invalid state scope', 400, noStore)
-    const identity = await authorizeState(c.req.raw, c.env, scope)
-    if (!identity) return c.text('unauthorized', 401, { 'WWW-Authenticate': 'Basic realm="firekv"', ...noStore })
+    const scope = c.get('stateScope')
+    const identity = c.get('stateIdentity')
     if (bodyTooLarge(c.req.raw)) return c.text('state exceeds Workers KV value limit', 413, noStore)
 
     const state = await c.req.arrayBuffer()
@@ -294,10 +301,8 @@ export function createFireKVApp(githubOptions: GitHubAuthOptions = {}) {
   })
 
   app.delete('/tfstate/*', async (c) => {
-    const scope = scopeFromPath(c.req.path)
-    if (!scope) return c.text('invalid state scope', 400, noStore)
-    const identity = await authorizeState(c.req.raw, c.env, scope)
-    if (!identity) return c.text('unauthorized', 401, { 'WWW-Authenticate': 'Basic realm="firekv"', ...noStore })
+    const scope = c.get('stateScope')
+    const identity = c.get('stateIdentity')
 
     const current = await c.env.FILES.get(currentKey(scope), 'arrayBuffer')
     if (current !== null) {
