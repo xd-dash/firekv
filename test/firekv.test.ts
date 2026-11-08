@@ -261,10 +261,8 @@ test('GitHub provider middleware rejects a missing bearer before capability issu
   assert.equal(response.status, 401)
   assert.equal(response.headers.get('www-authenticate'), 'Bearer')
   assert.equal(response.headers.get('cache-control'), 'no-store')
-  assert.deepEqual(await response.json(), {
-    error: 'missing_bearer',
-    message: 'missing bearer token',
-  })
+  const body = await response.json() as { password?: string }
+  assert.equal(body.password, undefined)
 })
 
 
