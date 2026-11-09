@@ -27,7 +27,7 @@ test('anonymous, spoofed header, wrong owner and audience cannot access KV', asy
   assert.equal(entries.size, 0);
 });
 
-test('owner round-trips exact bytes, archives and deletes in dedicated namespace', async () => {
+test('owner round-trips exact bytes and deletes in dedicated namespace', async () => {
   const { call, entries } = fixture();
   const bytes = new Uint8Array([0, 255, 123, 125]);
   assert.equal((await call('/tfstate/agni/leader')).status, 404);
@@ -38,8 +38,7 @@ test('owner round-trips exact bytes, archives and deletes in dedicated namespace
   assert.equal((await call('/tfstate/agni/other')).status, 404);
   assert.equal((await call('/tfstate/agni/leader', { method: 'DELETE' })).status, 200);
   assert.equal((await call('/tfstate/agni/leader')).status, 404);
-  assert.equal(entries.size, 2);
-  assert([...entries.keys()].every(key => key.startsWith('terraform/agni/leader/history/')));
+  assert.equal(entries.size, 0);
 });
 
 test('no editor, auth exchange, lock emulation, or malformed scope routes', async () => {
@@ -58,10 +57,13 @@ test('missing deployment policy fails closed and oversized writes do not persist
   assert.equal(entries.size, 0);
 });
 
-test('history failure prevents replacement of current state', async () => {
-  const { call, env } = fixture();
+test('failed state write preserves the existing current value', async () => {
+  const { call, env, entries } = fixture();
   await call('/tfstate/a', { method: 'POST', body: 'original' });
-  env.TFSTATE.put = async () => { throw Error('storage failure'); };
+  env.TFSTATE.put = async (key, value) => {
+    if (value instanceof ArrayBuffer && Buffer.from(value).toString() === 'replacement') throw Error('storage failure');
+    entries.set(key, value);
+  };
   assert.equal((await call('/tfstate/a', { method: 'POST', body: 'replacement' })).status, 500);
   assert.equal(await (await call('/tfstate/a')).text(), 'original');
 });
