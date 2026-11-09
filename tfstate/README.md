@@ -32,8 +32,8 @@ are denied before copying any state.
 
 ## Terraform protocol
 
-`GET`, `POST`, and `DELETE /tfstate/<scope>` preserve opaque state bytes and
-history under `terraform/<scope>/`. There is no compression or fake KV lock.
+`GET`, `POST`, and `DELETE /tfstate/<scope>` preserve opaque state bytes under `terraform/<scope>/`. Each scope stores only
+its current state object; there is no history, backup, or restore behavior. There is no compression or fake KV lock.
 This is the selected sandbox state backend: KV can return stale state even
 with sequential writers. This split does not qualify KV for production state.
 Do not create or use GCS for Terraform state.
