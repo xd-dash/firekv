@@ -34,9 +34,9 @@ are denied before copying any state.
 
 `GET`, `POST`, and `DELETE /tfstate/<scope>` preserve opaque state bytes and
 history under `terraform/<scope>/`. There is no compression or fake KV lock.
-This is the existing sandbox consistency model: KV can return stale state even
+This is the selected sandbox state backend: KV can return stale state even
 with sequential writers. This split does not qualify KV for production state.
-Keep GCS authoritative until a separate consistency/locking decision is made.
+Do not create or use GCS for Terraform state.
 
 Terraform's HTTP backend does not perform an Access browser login. Before live
 qualification, provide a local authenticated transport that logs the owner in
@@ -49,16 +49,16 @@ silently introduce a machine token to bypass the owner-only requirement.
 2. Prove owner read/write/fresh-process recovery, wrong-user/anonymous denial,
    and denial through alternate hosts. Test exact-byte preservation with
    disposable state before introducing real state.
-3. Inventory old FireKV and GCS state privately. Preserve object generations,
+3. Inventory existing FireKV state privately. Preserve exact bytes,
    lineage, serial, resource addresses, workspaces, and rollback copies.
 4. Pause writers. Migrate each explicitly selected state and compare source and
    destination. Update all backend clients and leader remote-state readers.
 5. Only after successful cutover, remove state/auth routes and state credentials
    from the public Worker. Preserve the reserved `terraform/` filter until old
-   state has been safely removed from its namespace. Never expose legacy state
+   state has been safely removed from `FILES`. Never expose legacy state
    by removing the filter during the split.
 
-No active state is migrated by these source files. GCS and the legacy FireKV
+No active state is migrated by these source files. The legacy FireKV
 state routes remain unchanged until deployment and cutover are verified.
 
 ## Checks
