@@ -56,12 +56,6 @@ export default {
         ? await readBody(request)
         : await env.TFSTATE.get(key, 'arrayBuffer');
       if (state === null && request.method === 'POST') return reply('State exceeds KV limit', 413);
-      if (state !== null) {
-        const revision = `${Date.now()}-${crypto.randomUUID()}`;
-        await env.TFSTATE.put(`terraform/${scope}/history/${revision}.tfstate`, state, {
-          metadata: { owner: identity.email, operation: request.method, savedAt: new Date().toISOString() },
-        });
-      }
       if (request.method === 'POST') await env.TFSTATE.put(key, state);
       else await env.TFSTATE.delete(key);
       return reply(null);
