@@ -1,94 +1,89 @@
 # Private Terraform state Worker
 
-This is a separate deployment from the public FireKV editor. Preferred hostname:
-`tfstate.firekv.dashxd.com`. Workers Custom Domains support multi-level hostnames;
-the existing `firekv.dashxd.com` exact-host binding does not conflict.
+This Worker serves only Terraform HTTP state routes. It has a dedicated TFSTATE
+KV binding that is never attached to the public FireKV editor. The preferred
+hostname is tfstate.firekv.dashxd.com; it does not require Cloudflare Access.
 
-## Authority and isolation
+## Authentication and isolation
 
-Huram owns Cloudflare deployment and exact policy. Create a fresh KV namespace
-named `firekv-tfstate`; bind it only to this Worker as `TFSTATE`. Never bind that
-namespace to the public editor. Replace the zero namespace ID in a generated
-deployment configuration, not with the public `FILES` namespace ID.
+The private Worker uses the same two-stage authentication as the existing
+FireKV state routes:
 
-Deployment must supply `OWNER_EMAIL` (the owner's exact verified IdP email),
-`ACCESS_AUD` (the Access application audience), and `STATE_HOST` (the exact
-hostname). Missing settings fail closed. Do not guess the owner's email.
+1. Huram presents a GitHub Actions OIDC assertion to POST /auth/github-oidc.
+2. auth.net.im verifies the GitHub assertion against the configured issuer,
+   audience, repository, repository ID, owner, ref, and workflow policy.
+3. FireKV returns a short-lived HMAC-SHA256 capability bound to exactly one
+   state scope.
+4. Terraform uses that capability as HTTP Basic auth for GET, POST, and DELETE
+   /tfstate/<scope>.
 
-Configure an Access self-hosted application for the entire hostname, allowing
-only the owner through the chosen identity provider. Do not add Everyone,
-Bypass, or service-token policies. The Worker independently checks native
-`ctx.access`, its audience, and the owner's email on every request. Spoofed
-identity headers do not authenticate. Disable workers.dev and preview URLs.
-There are no public editor routes, GitHub credential exchange, or public
-Service Bindings. No credentials or state enter logs.
+The GitHub OIDC identity is the workflow identity. The Basic credential is only
+a temporary state-route capability; it cannot mint another capability and
+cannot authorize Cloudflare deployment. GitHub OIDC itself cannot read or write
+state routes. Hono middleware remains route-specific: OIDC middleware is mounted
+on /auth/github-oidc, and capability validation is mounted on /tfstate/*.
 
-The Wrangler file intentionally has no live route or owner policy until Huram
-provisions and verifies Access. Its zero namespace ID is not deployable state.
-Bind the Custom Domain through a generated `routes` entry with
-`{"pattern":"tfstate.firekv.dashxd.com","custom_domain":true}` only after
-the Access application/policy exists. Verify anonymous and wrong-user requests
-are denied before copying any state.
+Set the existing GITHUB_* policy bindings to the approved Huram repository and
+deployment/qualification workflow. Keep the owner and repository IDs pinned.
+Use a dedicated workflow ref/prefix for production state operations. Missing or
+invalid policy values fail closed.
 
-## Terraform protocol
+FIREKV_SESSION_SECRET is a high-entropy Cloudflare Worker secret used to sign
+the short-lived capabilities. The Terraform deployment should manage it as a
+secret_text binding and generate it once, not on every run. It is sensitive
+Terraform state and therefore must be stored only in the private FireKV state
+backend. FIREKV_SESSION_TTL_SECONDS defaults to 3600 and may be set from 300
+through 7200. Rotating the HMAC secret invalidates active capabilities.
 
-`GET`, `POST`, and `DELETE /tfstate/<scope>` preserve opaque state bytes under `terraform/<scope>/`. Each scope stores only
-its current state object; there is no history, backup, or restore behavior. There is no compression or fake KV lock.
-This is the selected sandbox state backend: KV can return stale state even
-with sequential writers. This split does not qualify KV for production state.
-Do not create or use GCS for Terraform state.
+The Worker disables workers.dev and preview URLs. There is no Access policy,
+public editor route, GitHub token exchange in the state middleware, or public
+Service Binding. The existing editor is bound only to FILES; this Worker is
+bound only to TFSTATE. The public UI cannot list or read this namespace.
 
-Terraform's HTTP backend does not perform an Access browser login. Before live
-qualification, provide a local authenticated transport that logs the owner in
-and attaches their Access authorization to each Terraform request. Do not
-silently introduce a machine token to bypass the owner-only requirement.
+## Terraform protocol and sandbox consistency
 
-## Cutover
+GET, POST, and DELETE /tfstate/<scope> store opaque bytes under the single
+current-state key terraform/<scope>/terraform.tfstate. There is no history,
+backup, restore, compression, or fake KV lock.
 
-1. Deploy exact source with a new namespace and owner-only Access policy.
-2. Prove owner read/write/fresh-process recovery, wrong-user/anonymous denial,
-   and denial through alternate hosts. Test exact-byte preservation with
-   disposable state before introducing real state.
-3. Inventory existing FireKV state privately. Preserve exact bytes,
-   lineage, serial, resource addresses, workspaces, and rollback copies.
-4. Pause writers. Migrate each explicitly selected state and compare source and
-   destination. Update all backend clients and leader remote-state readers.
-5. Only after successful cutover, remove state/auth routes and state credentials
-   from the public Worker. Preserve the reserved `terraform/` filter until old
-   state has been safely removed from `FILES`. Never expose legacy state
-   by removing the filter during the split.
+Workers KV is eventually consistent. That is accepted for this sandbox.
+Serialize Terraform writers per exact state scope and use bounded read-after-write
+polling. Do not configure Terraform HTTP lock or unlock endpoints.
 
-No active state is migrated by these source files. The legacy FireKV
-state routes remain unchanged until deployment and cutover are verified.
+No GCS state backend is used.
 
-## Checks
+## Deployment and cutover
 
-`node --test tfstate/worker.test.mjs`
+Huram owns Cloudflare resources and policy. Manage the Worker, dedicated KV
+namespace, Custom Domain, Hono module upload, and HMAC secret binding through
+cfxd Terraform. Do not deploy the production Worker with Wrangler or direct API
+scripts.
 
-For the full disposable local Wrangler/workerd proof:
+The existing public FireKV Worker and its current /tfstate/* routes remain
+unchanged until a deliberate cutover. Current production state remains in the
+existing FILES namespace until that cutover. The public editor's reserved
+terraform/ filter and read/write denial must remain in place.
 
-```sh
-cd tfstate
-npm ci --ignore-scripts --no-audit --no-fund
-TERRAFORM_BIN="$(command -v terraform)" npm run qualify-local
-```
+There is no state migration in this PR. No production namespace, hostname,
+Access policy, DNS record, or Cloudflare resource is created by these files.
+When a state scope is intentionally moved, pause writers, use Terraform's
+backend migration with bounded consistency checks, and verify the expected
+lineage, serial, and resource addresses before resuming writes. Do not make a
+backup copy.
 
-The local harness starts the exact production handler on loopback HTTPS with
-Wrangler's native `access.dev` identities and a fresh local KV persistence
-directory. It proves real Terraform HTTP apply/fresh-init recovery, exact-byte
-storage, restart recovery, scope isolation, deletion, and read/write/delete
-denial for anonymous, wrong-owner and wrong-audience profiles. Only the local
-test client accepts the disposable self-signed certificate. No production auth
-bypass is added. A loopback HTTP proxy adapts Terraform to that local certificate;
-it is test infrastructure, not a production credential bridge.
+## Qualification
 
-No Cloudflare account/token, live Access application, GCS, or deployed Worker is
-used. Native local Access simulation is not evidence of real IdP authentication
-or deployed policy correctness. Local KV does not reproduce edge eventual
-consistency. All child processes and temporary state are cleaned in finally.
+Run the package checks from repository root:
 
-From the repository root after the locked dependencies are installed:
-`npx wrangler deploy --config tfstate/wrangler.jsonc --dry-run`
+    npm ci --ignore-scripts --no-audit --no-fund
+    npm test
+    npm run typecheck
+    npx wrangler deploy --config tfstate/wrangler.jsonc --dry-run
 
-The tests use an in-memory KV double; they verify authorization and byte
-handling, not real Access policy, distributed consistency, or deployment.
+Huram's local integration qualification runs the exact Worker in Wrangler/workerd,
+requests a real GitHub Actions OIDC token, exchanges it for a scope-bound FireKV
+capability, and runs Terraform 1.9.8 HTTP apply plus fresh-init recovery against
+local KV. It also proves the public routes are absent, OIDC and Basic credentials
+cannot cross route families, scopes are isolated, and no backup/history key is
+written. This proves local protocol and auth integration, not live Cloudflare
+deployment or cross-edge KV consistency.
