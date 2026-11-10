@@ -224,6 +224,7 @@ try {
   assert.equal(response.status, 200);
   assert.deepEqual(response.body, bytes);
   passed('owner opaque-byte state round-trip through workerd local KV');
+  assert.equal((await request(runtime.port, '/tfstate/' + scope, 'DELETE', undefined, { authorization })).status, 200);
 
   await terraform(runtime.port, credentials);
   await stop(runtime.child);
