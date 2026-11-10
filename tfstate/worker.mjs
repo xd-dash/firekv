@@ -146,6 +146,7 @@ export function createTfstateApp(githubProvider = new GitHubProvider()) {
   app.all('/auth/github-oidc', c => c.text('Method not allowed', 405, noStore));
 
   app.use('/tfstate/*', async (c, next) => {
+    if (!['GET', 'POST', 'DELETE'].includes(c.req.method)) return c.text('Method not allowed', 405, noStore);
     const scope = scopeFromPath(c.req.path);
     if (!scope) return c.text('Not found', 404, noStore);
     const claims = await stateIdentity(c.req.raw, c.env, scope);
