@@ -1,0 +1,32 @@
+name: Private tfstate Worker
+on:
+  pull_request:
+    paths: ['tfstate/**', 'src/**', 'package.json', 'package-lock.json', '.github/workflows/tfstate-ci.yml']
+  push:
+    branches: [main]
+    paths: ['tfstate/**', 'src/**', 'package.json', 'package-lock.json', '.github/workflows/tfstate-ci.yml']
+permissions:
+  contents: read
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.8'
+          terraform_wrapper: false
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm test
+      - run: npx tsx --test tfstate/worker.test.mjs
+      - run: npm run typecheck
+      - run: npx wrangler deploy --config tfstate/wrangler.jsonc --dry-run
+        env:
+          WRANGLER_SEND_METRICS: 'false'
+      - run: git diff --exit-code
