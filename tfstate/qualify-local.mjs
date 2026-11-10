@@ -215,7 +215,7 @@ try {
   assert.equal((await request(runtime.port, '/tfstate/qualification/firekv/other', 'GET', undefined,
     { authorization })).status, 401);
   assert.equal((await request(runtime.port, '/auth/github-oidc', 'POST', '{}',
-    { authorization })).status, 403);
+    { authorization })).status, 401);
   passed('GitHub OIDC exchanges only at the auth route; scoped capability protects state routes');
 
   const bytes = Buffer.from([0, 255, 123, 125, 10]);
