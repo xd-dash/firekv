@@ -24,6 +24,7 @@ jobs:
           terraform_wrapper: false
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm test
+      - run: node --test tfstate/worker.test.mjs
       - run: npm run typecheck
       - run: npx wrangler deploy --config tfstate/wrangler.jsonc --dry-run
         env:
